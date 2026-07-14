@@ -1,0 +1,159 @@
+name: VPN Tunnel
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 */5 * * *'
+
+jobs:
+  vpn:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Install V2Ray
+      run: |
+        curl -L https://github.com/v2fly/fhs-install-v2ray/raw/master/install-release.sh -o install-v2ray.sh
+        chmod +x install-v2ray.sh
+        sudo bash install-v2ray.sh
+        sudo systemctl disable v2ray
+        echo "✅ V2Ray installed"
+
+    - name: Install cloudflared
+      run: |
+        wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+        chmod +x cloudflared-linux-amd64
+        sudo mv cloudflared-linux-amd64 /usr/local/bin/cloudflared
+        cloudflared --version
+
+    - name: Setup V2Ray Config
+      run: |
+        sudo mkdir -p /usr/local/etc/v2ray
+        sudo tee /usr/local/etc/v2ray/config.json > /dev/null << 'EOF'
+        {
+          "log": {
+            "access": "/var/log/v2ray/access.log",
+            "error": "/var/log/v2ray/error.log",
+            "loglevel": "debug"
+          },
+          "inbounds": [{
+            "port": 8080,
+            "listen": "0.0.0.0",
+            "protocol": "vmess",
+            "settings": {
+              "clients": [{
+                "id": "eb705684-21e0-4422-9cbe-b0209b702961",
+                "alterId": 0
+              }]
+            },
+            "streamSettings": {
+              "network": "ws",
+              "wsSettings": {
+                "path": "/ws",
+                "headers": {
+                  "Host": "localhost"
+                }
+              }
+            }
+          }],
+          "outbounds": [{
+            "protocol": "freedom",
+            "settings": {}
+          }]
+        }
+        EOF
+        echo "✅ V2Ray config created"
+
+    - name: Start VPN & Keep Alive
+      run: |
+        echo "🚀 Starting V2Ray..."
+        sudo v2ray run -config /usr/local/etc/v2ray/config.json > /tmp/v2ray.log 2>&1 &
+        V2RAY_PID=$!
+        sleep 5
+
+        # Check if V2Ray is running
+        if ! kill -0 $V2RAY_PID 2>/dev/null; then
+          echo "❌ V2Ray failed to start!"
+          cat /tmp/v2ray.log
+          exit 1
+        fi
+        echo "✅ V2Ray running (PID: $V2RAY_PID)"
+
+        echo "🚀 Starting Cloudflare Tunnel..."
+        cloudflared tunnel --url http://localhost:8080 > /tmp/tunnel.log 2>&1 &
+        CF_PID=$!
+        sleep 25
+
+        # Check if cloudflared is running
+        if ! kill -0 $CF_PID 2>/dev/null; then
+          echo "❌ Cloudflared failed to start!"
+          cat /tmp/tunnel.log
+          exit 1
+        fi
+        echo "✅ Cloudflared running (PID: $CF_PID)"
+
+        # Extract tunnel URL
+        TUNNEL_URL=$(grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' /tmp/tunnel.log | head -1)
+
+        if [ -z "$TUNNEL_URL" ]; then
+          echo "⚠️ Waiting more for tunnel URL..."
+          sleep 10
+          TUNNEL_URL=$(grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' /tmp/tunnel.log | head -1)
+        fi
+
+        if [ -z "$TUNNEL_URL" ]; then
+          echo "❌ Could not get tunnel URL!"
+          cat /tmp/tunnel.log
+          exit 1
+        fi
+
+        HOST=$(echo $TUNNEL_URL | sed 's|https://||')
+
+        echo ""
+        echo "========================================"
+        echo "🎯 TUNNEL URL: $TUNNEL_URL"
+        echo "========================================"
+        echo ""
+        echo "📱 NEKOBOX SETTINGS (COPY EXACTLY):"
+        echo ""
+        echo "Profile Name: GitHub-VPN"
+        echo "Type: VMess"
+        echo "Server: $HOST"
+        echo "Port: 443"
+        echo "UUID: eb705684-21e0-4422-9cbe-b0209b702961"
+        echo "Alter ID: 0"
+        echo "Security: auto"
+        echo "Network: ws"
+        echo "Path: /ws"
+        echo "TLS: ON ✅"
+        echo "Allow Insecure: ON ✅ (VERY IMPORTANT!)"
+        echo "WS Host: $HOST"
+        echo "SNI: $HOST"
+        echo ""
+        echo "========================================"
+
+        # Test WebSocket locally
+        echo "🧪 Testing WebSocket locally..."
+        curl -s -o /dev/null -w "WS Test Status: %{http_code}\n"           -H "Upgrade: websocket"           -H "Connection: Upgrade"           -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ=="           -H "Sec-WebSocket-Version: 13"           http://localhost:8080/ws || true
+
+        # Keep both services alive
+        echo "⏳ Keeping VPN alive for 6 hours..."
+        for i in $(seq 1 360); do
+          if ! kill -0 $V2RAY_PID 2>/dev/null; then
+            echo "⚠️ V2Ray died! Restarting..."
+            sudo v2ray run -config /usr/local/etc/v2ray/config.json > /tmp/v2ray.log 2>&1 &
+            V2RAY_PID=$!
+            sleep 3
+          fi
+          if ! kill -0 $CF_PID 2>/dev/null; then
+            echo "⚠️ Cloudflared died! Restarting..."
+            cloudflared tunnel --url http://localhost:8080 > /tmp/tunnel.log 2>&1 &
+            CF_PID=$!
+            sleep 10
+          fi
+          echo "[$i/360] $(date '+%H:%M:%S') - VPN Running..."
+          sleep 60
+        done
