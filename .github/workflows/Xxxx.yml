@@ -14,14 +14,13 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v4
 
-    - name: Install V2Ray
+    - name: Install Xray (أحدث وأكثر استقراراً)
       run: |
-        curl -L -o install-v2ray.sh https://github.com/v2fly/fhs-install-v2ray/raw/master/install-release.sh
-        chmod +x install-v2ray.sh
-        sudo bash install-v2ray.sh
-        sudo systemctl disable v2ray
-        v2ray version
-        echo "✅ V2Ray installed"
+        curl -L -o install-xray.sh https://github.com/XTLS/Xray-install/raw/main/install-release.sh
+        chmod +x install-xray.sh
+        sudo bash install-xray.sh
+        xray version
+        echo "✅ Xray installed"
 
     - name: Install cloudflared
       run: |
@@ -30,14 +29,14 @@ jobs:
         sudo mv cloudflared-linux-amd64 /usr/local/bin/cloudflared
         cloudflared --version
 
-    - name: Setup VLESS Config
+    - name: Setup VLESS Config (مُبسط - بدون Host header)
       run: |
-        sudo mkdir -p /usr/local/etc/v2ray /var/log/v2ray
-        sudo tee /usr/local/etc/v2ray/config.json > /dev/null << 'EOF'
+        sudo mkdir -p /usr/local/etc/xray /var/log/xray
+        sudo tee /usr/local/etc/xray/config.json > /dev/null << 'EOF'
         {
           "log": {
-            "access": "/var/log/v2ray/access.log",
-            "error": "/var/log/v2ray/error.log",
+            "access": "/var/log/xray/access.log",
+            "error": "/var/log/xray/error.log",
             "loglevel": "debug"
           },
           "inbounds": [{
@@ -54,10 +53,7 @@ jobs:
             "streamSettings": {
               "network": "ws",
               "wsSettings": {
-                "path": "/?ed=2048",
-                "headers": {
-                  "Host": "ourquraan.com"
-                }
+                "path": "/?ed=2048"
               }
             }
           }],
@@ -69,24 +65,24 @@ jobs:
         EOF
         echo "✅ VLESS config created"
 
-    - name: Start VLESS & Cloudflare Tunnel
+    - name: Start Xray & Cloudflare Tunnel
       run: |
-        echo "🚀 Starting V2Ray (VLESS)..."
-        sudo v2ray run -config /usr/local/etc/v2ray/config.json > /tmp/v2ray.log 2>&1 &
-        V2RAY_PID=$!
+        echo "🚀 Starting Xray..."
+        sudo xray run -config /usr/local/etc/xray/config.json > /tmp/xray.log 2>&1 &
+        XRAY_PID=$!
         sleep 5
 
-        if ! kill -0 $V2RAY_PID 2>/dev/null; then
-          echo "❌ V2Ray failed to start!"
-          cat /tmp/v2ray.log
+        if ! kill -0 $XRAY_PID 2>/dev/null; then
+          echo "❌ Xray failed to start!"
+          cat /tmp/xray.log
           exit 1
         fi
-        echo "✅ V2Ray running (PID: $V2RAY_PID)"
+        echo "✅ Xray running (PID: $XRAY_PID)"
 
         echo "🚀 Starting Cloudflare Tunnel..."
         cloudflared tunnel --url http://localhost:8080 > /tmp/tunnel.log 2>&1 &
         CF_PID=$!
-        sleep 25
+        sleep 30
 
         if ! kill -0 $CF_PID 2>/dev/null; then
           echo "❌ Cloudflared failed to start!"
@@ -99,7 +95,7 @@ jobs:
 
         if [ -z "$TUNNEL_URL" ]; then
           echo "⚠️ Waiting more for tunnel URL..."
-          sleep 15
+          sleep 20
           TUNNEL_URL=$(grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' /tmp/tunnel.log | head -1)
         fi
 
@@ -117,11 +113,16 @@ jobs:
         echo "🎯 HOST: $HOST"
         echo "========================================"
 
+        # Health Check
+        echo "🩺 Running health check..."
+        sleep 5
+        curl -s -o /dev/null -w "%{http_code}" https://$HOST/ || echo "Health check returned non-200 (expected for VLESS)"
+
         # Send to Telegram
         BOT_TOKEN="${{ secrets.TELEGRAM_BOT_TOKEN }}"
         CHAT_ID="${{ secrets.TELEGRAM_CHAT_ID }}"
 
-        MSG_TEXT="VLESS Tunnel Started!%0A%0A🎯 Server: $HOST%0A🔗 URL: $TUNNEL_URL%0A%0A📱 HTTP Injector / NekoBox:%0A• Type: VLESS%0A• Server: $HOST%0A• Port: 443%0A• UUID: 7dcf879a-148c-4399-b220-d68f78440e3d%0A• Encryption: none%0A• Network: ws%0A• Path: /?ed=2048%0A• TLS: ON%0A• SNI: $HOST%0A• WS Host: ourquraan.com%0A%0A⚠️ Domain Fronting requires Custom Domain.%0AHTTP Host spoofing only.%0A%0A⏰ Auto-restart: Every 5 hours%0A⏳ Duration: 6 hours max"
+        MSG_TEXT="VLESS Tunnel Started!%0A%0A🎯 Server: $HOST%0A🔗 URL: $TUNNEL_URL%0A%0A📱 HTTP Injector:%0A• Type: VLESS%0A• Server: $HOST%0A• Port: 443%0A• UUID: 7dcf879a-148c-4399-b220-d68f78440e3d%0A• Encryption: none%0A• Network: ws%0A• Path: /?ed=2048%0A• TLS: ON%0A• SNI: $HOST%0A• WS Host: $HOST%0A%0A⏰ Auto-restart: Every 5 hours%0A⏳ Duration: 6 hours max"
 
         curl -s -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
           -d "chat_id=$CHAT_ID" \
@@ -130,16 +131,14 @@ jobs:
           > /tmp/telegram_response.json
 
         if [ $? -eq 0 ]; then
-          echo "✅ Telegram notification sent!"
+          echo "✅ Telegram sent!"
         else
           echo "⚠️ Telegram failed"
-          cat /tmp/telegram_response.json
         fi
 
         echo ""
         echo "========================================"
-        echo "📱 SETTINGS FOR CLIENT:"
-        echo ""
+        echo "📱 SETTINGS:"
         echo "Type: VLESS"
         echo "Server: $HOST"
         echo "Port: 443"
@@ -149,16 +148,16 @@ jobs:
         echo "Path: /?ed=2048"
         echo "TLS: ON"
         echo "SNI: $HOST"
-        echo "WS Host: ourquraan.com"
+        echo "WS Host: $HOST"
         echo "========================================"
 
-        # Keep alive for 6 hours
-        echo "⏳ Keeping tunnel alive for 6 hours..."
+        # Keep alive
+        echo "⏳ Keeping alive for 6 hours..."
         for i in $(seq 1 360); do
-          if ! kill -0 $V2RAY_PID 2>/dev/null; then
-            echo "⚠️ V2Ray died! Restarting..."
-            sudo v2ray run -config /usr/local/etc/v2ray/config.json > /tmp/v2ray.log 2>&1 &
-            V2RAY_PID=$!
+          if ! kill -0 $XRAY_PID 2>/dev/null; then
+            echo "⚠️ Xray died! Restarting..."
+            sudo xray run -config /usr/local/etc/xray/config.json > /tmp/xray.log 2>&1 &
+            XRAY_PID=$!
             sleep 3
           fi
           if ! kill -0 $CF_PID 2>/dev/null; then
@@ -173,6 +172,6 @@ jobs:
               echo "🔄 New tunnel: $TUNNEL_URL"
             fi
           fi
-          echo "[$i/360] $(date '+%H:%M:%S') | Tunnel: $TUNNEL_URL"
+          echo "[$i/360] $(date '+%H:%M:%S') | $TUNNEL_URL"
           sleep 60
         done
