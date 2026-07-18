@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write # هذا السطر يحل المشكلة ويعطي صلاحية الكتابة
+  contents: write
 
 jobs:
   shift-1:
@@ -34,14 +34,37 @@ jobs:
           { "inbounds": [{"port": 8080,"listen": "127.0.0.1","protocol": "vless","settings": {"clients": [{"id": "7dcf879a-148c-4399-b220-d68f78440e3d","level": 0}],"decryption": "none"},"streamSettings": {"network": "ws","wsSettings": {"path": "/ws"}}}], "outbounds": [{"protocol": "freedom"}] }
           EOF
 
-      - name: Update State (Taking Shift)
+      - name: Check Duplicate & Take Shift
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          echo '{"active_shift": "shift-1"}' > state.json
-          git add state.json
-          git commit -m "Shift 1 started" || echo "No changes"
-          git push
+          git pull --rebase
+          CURRENT_TIME=$(date +%s)
+          ACTIVE=""
+          HEARTBEAT=0
+          
+          if [ -f state.json ]; then
+            ACTIVE=$(cat state.json | grep -o '"active_shift": "[^"]*"' | cut -d'"' -f4)
+            HEARTBEAT=$(cat state.json | grep -o '"heartbeat": [0-9]*' | grep -o '[0-9]*')
+          fi
+          
+          # إذا كانت نفس الوردية تعمل ونبضها خلال آخر دقيقتين، فهذا تشغيل مكرر
+          if [ "$ACTIVE" == "shift-1" ] && [ -n "$HEARTBEAT" ] && [ $((CURRENT_TIME - HEARTBEAT)) -lt 120 ]; then
+            echo "DUPLICATE=true" >> $GITHUB_ENV
+            MESSAGE="⚠️ *تنبيه: تم محاولة تشغيل الوردية الأولى وهي تعمل بالفعل!*
+            تم تجاهل الطلب المكرر لمنع التعارض."
+            curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" -d chat_id="${TELEGRAM_CHAT_ID}" -d text="${MESSAGE}" -d parse_mode="Markdown"
+          else
+            echo "DUPLICATE=false" >> $GITHUB_ENV
+            echo "{\"active_shift\": \"shift-1\", \"heartbeat\": $CURRENT_TIME}" > state.json
+            git add state.json
+            git commit -m "Shift 1 started" || echo "No changes"
+            git push
+          fi
 
       - name: Start Servers
+        if: env.DUPLICATE == 'false'
         run: |
           ./xray/xray -config=config.json &
           /usr/local/bin/cloudflared tunnel --url http://localhost:8080 --no-autoupdate > tunnel.log 2>&1 &
@@ -51,6 +74,7 @@ jobs:
           echo "HOST=$HOST" >> $GITHUB_ENV
 
       - name: Send Telegram (Start)
+        if: env.DUPLICATE == 'false'
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -60,7 +84,8 @@ jobs:
           🔗 *Host:* \`${{ env.HOST }}\`"
           curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" -d chat_id="${TELEGRAM_CHAT_ID}" -d text="${MESSAGE}" -d parse_mode="Markdown"
 
-      - name: Keep Alive & Monitor Handover
+      - name: Keep Alive, Heartbeat & Monitor Handover
+        if: env.DUPLICATE == 'false'
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -71,6 +96,13 @@ jobs:
             CURRENT_TIME=$(date +%s)
             ELAPSED=$((CURRENT_TIME - START_TIME))
             
+            # 1. تحديث نبضات الحياة (Heartbeat)
+            echo "{\"active_shift\": \"shift-1\", \"heartbeat\": $CURRENT_TIME}" > state.json
+            git add state.json
+            git commit -m "Shift 1 heartbeat" || echo "No changes"
+            git pull --rebase && git push || echo "Push conflict, will retry"
+            
+            # 2. فحص التسليم
             git pull --rebase
             ACTIVE=$(cat state.json | grep -o '"active_shift": "[^"]*"' | cut -d'"' -f4)
             
