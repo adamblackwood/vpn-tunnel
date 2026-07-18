@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write # صلاحية الكتابة لحل مشكلة 403
+  contents: write
 
 jobs:
   shift-2:
@@ -39,18 +39,21 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          git pull --rebase
+          git pull --rebase || true
           CURRENT_TIME=$(date +%s)
-          ACTIVE=""
+          ACTIVE="none"
           HEARTBEAT=0
           
           if [ -f state.json ]; then
-            ACTIVE=$(cat state.json | grep -o '"active_shift": "[^"]*"' | cut -d'"' -f4)
-            HEARTBEAT=$(cat state.json | grep -o '"heartbeat": [0-9]*' | grep -o '[0-9]*')
+            ACTIVE=$(grep -o '"active_shift": "[^"]*"' state.json | cut -d'"' -f4 || true)
+            HEARTBEAT=$(grep -o '"heartbeat": [0-9]*' state.json | grep -o '[0-9]*' || true)
+            if [ -z "$ACTIVE" ]; then ACTIVE="none"; fi
+            if [ -z "$HEARTBEAT" ]; then HEARTBEAT=0; fi
+          else
+            echo "state.json not found. Will create a new one."
           fi
           
-          # إذا كانت نفس الوردية تعمل ونبضها خلال آخر دقيقتين، فهذا تشغيل مكرر
-          if [ "$ACTIVE" == "shift-2" ] && [ -n "$HEARTBEAT" ] && [ $((CURRENT_TIME - HEARTBEAT)) -lt 120 ]; then
+          if [ "$ACTIVE" == "shift-2" ] && [ $((CURRENT_TIME - HEARTBEAT)) -lt 120 ]; then
             echo "DUPLICATE=true" >> $GITHUB_ENV
             MESSAGE="⚠️ *تنبيه: تم محاولة تشغيل الوردية الثانية وهي تعمل بالفعل!*
             تم تجاهل الطلب المكرر لمنع التعارض."
@@ -59,8 +62,8 @@ jobs:
             echo "DUPLICATE=false" >> $GITHUB_ENV
             echo "{\"active_shift\": \"shift-2\", \"heartbeat\": $CURRENT_TIME}" > state.json
             git add state.json
-            git commit -m "Shift 2 started" || echo "No changes"
-            git push
+            git commit -m "Shift 2 started" || true
+            git push || true
           fi
 
       - name: Start Servers
@@ -96,15 +99,13 @@ jobs:
             CURRENT_TIME=$(date +%s)
             ELAPSED=$((CURRENT_TIME - START_TIME))
             
-            # 1. تحديث نبضات الحياة (Heartbeat)
             echo "{\"active_shift\": \"shift-2\", \"heartbeat\": $CURRENT_TIME}" > state.json
             git add state.json
-            git commit -m "Shift 2 heartbeat" || echo "No changes"
-            git pull --rebase && git push || echo "Push conflict, will retry"
+            git commit -m "Shift 2 heartbeat" || true
+            git pull --rebase && git push || true
             
-            # 2. فحص التسليم
-            git pull --rebase
-            ACTIVE=$(cat state.json | grep -o '"active_shift": "[^"]*"' | cut -d'"' -f4)
+            git pull --rebase || true
+            ACTIVE=$(grep -o '"active_shift": "[^"]*"' state.json | cut -d'"' -f4 || true)
             
             if [ "$ACTIVE" != "shift-2" ]; then
               MESSAGE="🟡 *الوردية الثانية سلّمت الدوام للوردية الأولى وتوقفت.*
