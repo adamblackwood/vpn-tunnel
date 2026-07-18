@@ -1,17 +1,18 @@
 name: Shift 1 (00:00 - 06:00)
 
 on:
-  workflow_dispatch: # يمكن تشغيله يدوياً لاختباره
+  workflow_dispatch:
+
+permissions:
+  contents: write # هذا السطر يحل المشكلة ويعطي صلاحية الكتابة
 
 jobs:
   shift-1:
     runs-on: ubuntu-latest
-    timeout-minutes: 360 # أقصى مدة 6 ساعات
+    timeout-minutes: 360
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Git
         run: |
@@ -65,12 +66,11 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           START_TIME=$(date +%s)
-          MAX_DURATION=$((4 * 3600)) # 4 ساعات إجبارية
+          MAX_DURATION=$((4 * 3600))
           while true; do
             CURRENT_TIME=$(date +%s)
             ELAPSED=$((CURRENT_TIME - START_TIME))
             
-            # التحقق من دفتر التحضير كل دقيقة
             git pull --rebase
             ACTIVE=$(cat state.json | grep -o '"active_shift": "[^"]*"' | cut -d'"' -f4)
             
@@ -88,5 +88,5 @@ jobs:
               break
             fi
             
-            sleep 60 # انتظر دقيقة قبل الفحص مرة أخرى
+            sleep 60
           done
