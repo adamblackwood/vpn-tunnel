@@ -1,0 +1,92 @@
+name: Shift 1 (00:00 - 06:00)
+
+on:
+  workflow_dispatch: # يمكن تشغيله يدوياً لاختباره
+
+jobs:
+  shift-1:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360 # أقصى مدة 6 ساعات
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Git
+        run: |
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+
+      - name: Install Cloudflared & Xray
+        run: |
+          wget https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+          chmod +x cloudflared-linux-amd64
+          sudo mv cloudflared-linux-amd64 /usr/local/bin/cloudflared
+          wget https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
+          unzip Xray-linux-64.zip -d xray
+          chmod +x xray/xray
+
+      - name: Create Xray Config
+        run: |
+          cat > config.json <<EOF
+          { "inbounds": [{"port": 8080,"listen": "127.0.0.1","protocol": "vless","settings": {"clients": [{"id": "7dcf879a-148c-4399-b220-d68f78440e3d","level": 0}],"decryption": "none"},"streamSettings": {"network": "ws","wsSettings": {"path": "/ws"}}}], "outbounds": [{"protocol": "freedom"}] }
+          EOF
+
+      - name: Update State (Taking Shift)
+        run: |
+          echo '{"active_shift": "shift-1"}' > state.json
+          git add state.json
+          git commit -m "Shift 1 started" || echo "No changes"
+          git push
+
+      - name: Start Servers
+        run: |
+          ./xray/xray -config=config.json &
+          /usr/local/bin/cloudflared tunnel --url http://localhost:8080 --no-autoupdate > tunnel.log 2>&1 &
+          sleep 10
+          TUNNEL_URL=$(grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' tunnel.log | head -n 1)
+          HOST=$(echo $TUNNEL_URL | sed 's/https:\/\///')
+          echo "HOST=$HOST" >> $GITHUB_ENV
+
+      - name: Send Telegram (Start)
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          MESSAGE="🟢 *الوردية الأولى بدأت!*
+          🕒 من 00:00 إلى 04:00 (وقت احتياطي حتى 06:00)
+          🔗 *Host:* \`${{ env.HOST }}\`"
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" -d chat_id="${TELEGRAM_CHAT_ID}" -d text="${MESSAGE}" -d parse_mode="Markdown"
+
+      - name: Keep Alive & Monitor Handover
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          START_TIME=$(date +%s)
+          MAX_DURATION=$((4 * 3600)) # 4 ساعات إجبارية
+          while true; do
+            CURRENT_TIME=$(date +%s)
+            ELAPSED=$((CURRENT_TIME - START_TIME))
+            
+            # التحقق من دفتر التحضير كل دقيقة
+            git pull --rebase
+            ACTIVE=$(cat state.json | grep -o '"active_shift": "[^"]*"' | cut -d'"' -f4)
+            
+            if [ "$ACTIVE" != "shift-1" ]; then
+              MESSAGE="🟡 *الوردية الأولى سلّمت الدوام للوردية الثانية وتوقفت.*
+              ⏱ مدة العمل الفعلية: $((ELAPSED / 60)) دقيقة."
+              curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" -d chat_id="${TELEGRAM_CHAT_ID}" -d text="${MESSAGE}" -d parse_mode="Markdown"
+              break
+            fi
+            
+            if [ "$ELAPSED" -ge "$MAX_DURATION" ]; then
+              MESSAGE="🔴 *الوردية الأولى انتهى وقتها القانوني (4 ساعات) وتتوقف الآن.*
+              بانتظار الوردية الثانية..."
+              curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" -d chat_id="${TELEGRAM_CHAT_ID}" -d text="${MESSAGE}" -d parse_mode="Markdown"
+              break
+            fi
+            
+            sleep 60 # انتظر دقيقة قبل الفحص مرة أخرى
+          done
