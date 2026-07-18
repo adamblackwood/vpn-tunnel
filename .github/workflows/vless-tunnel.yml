@@ -1,23 +1,18 @@
-name: VLESS Cloudflare Tunnel
+name: VLESS Cloudflare Tunnel with Telegram Bot
 
 on:
-  workflow_dispatch: # يسمح بتشغيله يدوياً
+  workflow_dispatch:
   schedule:
     - cron: "0 */5 * * *" # يعمل تلقائياً كل 5 ساعات
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 330 # يتوقف تلقائياً بعد 5.5 ساعات لتجنب حظر GitHub
+    timeout-minutes: 330
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
-
-      - name: Setup Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.10'
 
       - name: Install Cloudflared
         run: |
@@ -31,14 +26,7 @@ jobs:
           unzip Xray-linux-64.zip -d xray
           chmod +x xray/xray
 
-      - name: Generate VLESS UUID
-        id: uuid
-        run: |
-          UUID=$(/usr/local/bin/cloudflared tunnel uuid 2>/dev/null || cat /proc/sys/kernel/random/uuid)
-          echo "uuid=$UUID" >> $GITHUB_OUTPUT
-          echo "Generated UUID: $UUID"
-
-      - name: Create Xray Config (VLESS)
+      - name: Create Xray Config (VLESS Fixed UUID)
         run: |
           cat > config.json <<EOF
           {
@@ -50,7 +38,7 @@ jobs:
                 "settings": {
                   "clients": [
                     {
-                      "id": "${{ steps.uuid.outputs.uuid }}",
+                      "id": "7dcf879a-148c-4399-b220-d68f78440e3d",
                       "level": 0
                     }
                   ],
@@ -75,20 +63,37 @@ jobs:
       - name: Start Xray Server
         run: ./xray/xray -config=config.json &
 
-      - name: Start Cloudflare Tunnel
+      - name: Start Cloudflare Tunnel & Extract URL
         run: |
-          # تشغيل النفق في الخلفية وحفظ المخرجات في ملف
           /usr/local/bin/cloudflared tunnel --url http://localhost:8080 --no-autoupdate > tunnel.log 2>&1 &
-          
-          # انتظار حتى يولد النفق رابط trycloudflare
           sleep 10
+          # استخراج الرابط من السجلات
           TUNNEL_URL=$(grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' tunnel.log | head -n 1)
+          # إزالة كلمة https://
+          HOST=$(echo $TUNNEL_URL | sed 's/https:\/\///')
+          echo "HOST=$HOST" >> $GITHUB_ENV
+
+      - name: Send Telegram Notification
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          MESSAGE="🚀 *VLESS Tunnel Started!*
           
-          echo "========================================"
-          echo "🚀 VLESS Tunnel Started Successfully!"
-          echo "🎯 Server: ${TUNNEL_URL}"
-          echo "🔑 UUID: ${{ steps.uuid.outputs.uuid }}"
-          echo "========================================"
+          🎯 *Server:* \`104.21.3.47\`
+          🔌 *Port:* \`80\`
+          🔗 *Host:* \`${{ env.HOST }}\`
+          🔑 *UUID:* \`7dcf879a-148c-4399-b220-d68f78440e3d\`
+          🛡 *TLS:* \`OFF\`
+          🌐 *Network:* \`ws\`
+          📁 *Path:* \`/ws\`
+          
+          ✅ *Ready for HTTP Injector!*"
+          
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+          -d chat_id="${TELEGRAM_CHAT_ID}" \
+          -d text="${MESSAGE}" \
+          -d parse_mode="Markdown"
 
       - name: Keep Alive
-        run: sleep 320m # يبقي الخادم يعمل لمدة 5 ساعات و20 دقيقة
+        run: sleep 320m
