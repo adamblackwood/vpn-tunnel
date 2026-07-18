@@ -1,0 +1,94 @@
+name: VLESS Cloudflare Tunnel
+
+on:
+  workflow_dispatch: # يسمح بتشغيله يدوياً
+  schedule:
+    - cron: "0 */5 * * *" # يعمل تلقائياً كل 5 ساعات
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330 # يتوقف تلقائياً بعد 5.5 ساعات لتجنب حظر GitHub
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install Cloudflared
+        run: |
+          wget https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+          chmod +x cloudflared-linux-amd64
+          sudo mv cloudflared-linux-amd64 /usr/local/bin/cloudflared
+
+      - name: Download Xray Core
+        run: |
+          wget https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
+          unzip Xray-linux-64.zip -d xray
+          chmod +x xray/xray
+
+      - name: Generate VLESS UUID
+        id: uuid
+        run: |
+          UUID=$(/usr/local/bin/cloudflared tunnel uuid 2>/dev/null || cat /proc/sys/kernel/random/uuid)
+          echo "uuid=$UUID" >> $GITHUB_OUTPUT
+          echo "Generated UUID: $UUID"
+
+      - name: Create Xray Config (VLESS)
+        run: |
+          cat > config.json <<EOF
+          {
+            "inbounds": [
+              {
+                "port": 8080,
+                "listen": "127.0.0.1",
+                "protocol": "vless",
+                "settings": {
+                  "clients": [
+                    {
+                      "id": "${{ steps.uuid.outputs.uuid }}",
+                      "level": 0
+                    }
+                  ],
+                  "decryption": "none"
+                },
+                "streamSettings": {
+                  "network": "ws",
+                  "wsSettings": {
+                    "path": "/ws"
+                  }
+                }
+              }
+            ],
+            "outbounds": [
+              {
+                "protocol": "freedom"
+              }
+            ]
+          }
+          EOF
+
+      - name: Start Xray Server
+        run: ./xray/xray -config=config.json &
+
+      - name: Start Cloudflare Tunnel
+        run: |
+          # تشغيل النفق في الخلفية وحفظ المخرجات في ملف
+          /usr/local/bin/cloudflared tunnel --url http://localhost:8080 --no-autoupdate > tunnel.log 2>&1 &
+          
+          # انتظار حتى يولد النفق رابط trycloudflare
+          sleep 10
+          TUNNEL_URL=$(grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' tunnel.log | head -n 1)
+          
+          echo "========================================"
+          echo "🚀 VLESS Tunnel Started Successfully!"
+          echo "🎯 Server: ${TUNNEL_URL}"
+          echo "🔑 UUID: ${{ steps.uuid.outputs.uuid }}"
+          echo "========================================"
+
+      - name: Keep Alive
+        run: sleep 320m # يبقي الخادم يعمل لمدة 5 ساعات و20 دقيقة
