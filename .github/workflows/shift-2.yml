@@ -3,6 +3,9 @@ name: Shift 2 (04:00 - 10:00)
 on:
   workflow_dispatch:
 
+permissions:
+  contents: write # صلاحية الكتابة
+
 jobs:
   shift-2:
     runs-on: ubuntu-latest
@@ -10,8 +13,6 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Git
         run: |
@@ -65,7 +66,7 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           START_TIME=$(date +%s)
-          MAX_DURATION=$((4 * 3600)) # 4 ساعات إجبارية
+          MAX_DURATION=$((4 * 3600))
           while true; do
             CURRENT_TIME=$(date +%s)
             ELAPSED=$((CURRENT_TIME - START_TIME))
