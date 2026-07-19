@@ -1,4 +1,4 @@
-name: Shift 2 (04:00 - 10:00)
+name: Shift 2
 
 on:
   workflow_dispatch:
@@ -9,7 +9,7 @@ permissions:
 jobs:
   shift-2:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 330
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
@@ -55,7 +55,7 @@ jobs:
           
           if [ "$ACTIVE" == "shift-2" ] && [ $((CURRENT_TIME - HEARTBEAT)) -lt 120 ]; then
             echo "DUPLICATE=true" >> $GITHUB_ENV
-            MESSAGE="⚠️ *تنبيه: تم محاولة تشغيل الوردية الثانية وهي تعمل بالفعل!*
+            MESSAGE="⚠️ *تنبيه: تم محاولة تشغيل الوردية 2 وهي تعمل بالفعل!*
             تم تجاهل الطلب المكرر لمنع التعارض."
             curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" -d chat_id="${TELEGRAM_CHAT_ID}" -d text="${MESSAGE}" -d parse_mode="Markdown"
           else
@@ -82,19 +82,27 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          MESSAGE="🔵 *الوردية الثانية بدأت!*
-          🕒 من 04:00 إلى 08:00 (وقت احتياطي حتى 10:00)
+          START_HM=$(TZ='Asia/Aden' date +"%H:%M")
+          END_HM=$(TZ='Asia/Aden' date -d "+4 hours" +"%H:%M")
+          BACKUP_HM=$(TZ='Asia/Aden' date -d "+5 hours 30 minutes" +"%H:%M")
+          
+          MESSAGE="🔵 *الوردية 2 بدأت!*
+          🕒 من: ${START_HM} إلى: ${END_HM}
+          ⏳ (احتياطي حتى: ${BACKUP_HM})
           🔗 *Host:* \`${{ env.HOST }}\`"
           curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" -d chat_id="${TELEGRAM_CHAT_ID}" -d text="${MESSAGE}" -d parse_mode="Markdown"
 
-      - name: Keep Alive, Heartbeat & Monitor Handover
+      - name: Keep Alive, Heartbeat & Overtime
         if: env.DUPLICATE == 'false'
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           START_TIME=$(date +%s)
-          MAX_DURATION=$((4 * 3600))
+          NORMAL_DURATION=$((4 * 3600))
+          MAX_DURATION=$((5 * 3600 + 1800))
+          OVERTIME_NOTIFIED=false
+          
           while true; do
             CURRENT_TIME=$(date +%s)
             ELAPSED=$((CURRENT_TIME - START_TIME))
@@ -108,15 +116,22 @@ jobs:
             ACTIVE=$(grep -o '"active_shift": "[^"]*"' state.json | cut -d'"' -f4 || true)
             
             if [ "$ACTIVE" != "shift-2" ]; then
-              MESSAGE="🟡 *الوردية الثانية سلّمت الدوام للوردية الأولى وتوقفت.*
+              MESSAGE="🟡 *الوردية 2 سلّمت الدوام للوردية التالية وتوقفت.*
               ⏱ مدة العمل الفعلية: $((ELAPSED / 60)) دقيقة."
               curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" -d chat_id="${TELEGRAM_CHAT_ID}" -d text="${MESSAGE}" -d parse_mode="Markdown"
               break
             fi
             
+            if [ "$ELAPSED" -ge "$NORMAL_DURATION" ] && [ "$OVERTIME_NOTIFIED" == "false" ]; then
+              OVERTIME_NOTIFIED=true
+              MESSAGE="🟠 *تنبيه: الوردية 2 دخلت في وضع التغطية الإضافية!*
+              الموظف القادم لم يصل بعد، سأستمر حتى 5.5 ساعات أو حتى يأتي البديل."
+              curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" -d chat_id="${TELEGRAM_CHAT_ID}" -d text="${MESSAGE}" -d parse_mode="Markdown"
+            fi
+            
             if [ "$ELAPSED" -ge "$MAX_DURATION" ]; then
-              MESSAGE="🔴 *الوردية الثانية انتهى وقتها القانوني (4 ساعات) وتتوقف الآن.*
-              بانتظار الوردية الأولى..."
+              MESSAGE="🔴 *الوردية 2 انتهت من وضع التغطية (5.5 ساعات) وتتوقف إجبارياً.*
+              بانتظار وصول الموظف القادم..."
               curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" -d chat_id="${TELEGRAM_CHAT_ID}" -d text="${MESSAGE}" -d parse_mode="Markdown"
               break
             fi
