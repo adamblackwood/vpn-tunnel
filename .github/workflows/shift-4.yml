@@ -1,0 +1,140 @@
+name: Shift 4
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  shift-4:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup Git
+        run: |
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+
+      - name: Install Cloudflared & Xray
+        run: |
+          wget https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+          chmod +x cloudflared-linux-amd64
+          sudo mv cloudflared-linux-amd64 /usr/local/bin/cloudflared
+          wget https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
+          unzip Xray-linux-64.zip -d xray
+          chmod +x xray/xray
+
+      - name: Create Xray Config
+        run: |
+          cat > config.json <<EOF
+          { "inbounds": [{"port": 8080,"listen": "127.0.0.1","protocol": "vless","settings": {"clients": [{"id": "7dcf879a-148c-4399-b220-d68f78440e3d","level": 0}],"decryption": "none"},"streamSettings": {"network": "ws","wsSettings": {"path": "/ws"}}}], "outbounds": [{"protocol": "freedom"}] }
+          EOF
+
+      - name: Check Duplicate & Take Shift
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          git pull --rebase || true
+          CURRENT_TIME=$(date +%s)
+          ACTIVE="none"
+          HEARTBEAT=0
+          
+          if [ -f state.json ]; then
+            ACTIVE=$(grep -o '"active_shift": "[^"]*"' state.json | cut -d'"' -f4 || true)
+            HEARTBEAT=$(grep -o '"heartbeat": [0-9]*' state.json | grep -o '[0-9]*' || true)
+            if [ -z "$ACTIVE" ]; then ACTIVE="none"; fi
+            if [ -z "$HEARTBEAT" ]; then HEARTBEAT=0; fi
+          else
+            echo "state.json not found. Will create a new one."
+          fi
+          
+          if [ "$ACTIVE" == "shift-4" ] && [ $((CURRENT_TIME - HEARTBEAT)) -lt 120 ]; then
+            echo "DUPLICATE=true" >> $GITHUB_ENV
+            MESSAGE="⚠️ *تنبيه: تم محاولة تشغيل الوردية 4 وهي تعمل بالفعل!*
+            تم تجاهل الطلب المكرر لمنع التعارض."
+            curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" -d chat_id="${TELEGRAM_CHAT_ID}" -d text="${MESSAGE}" -d parse_mode="Markdown"
+          else
+            echo "DUPLICATE=false" >> $GITHUB_ENV
+            echo "{\"active_shift\": \"shift-4\", \"heartbeat\": $CURRENT_TIME}" > state.json
+            git add state.json
+            git commit -m "Shift 4 started" || true
+            git push || true
+          fi
+
+      - name: Start Servers
+        if: env.DUPLICATE == 'false'
+        run: |
+          ./xray/xray -config=config.json &
+          /usr/local/bin/cloudflared tunnel --url http://localhost:8080 --no-autoupdate > tunnel.log 2>&1 &
+          sleep 10
+          TUNNEL_URL=$(grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' tunnel.log | head -n 1)
+          HOST=$(echo $TUNNEL_URL | sed 's/https:\/\///')
+          echo "HOST=$HOST" >> $GITHUB_ENV
+
+      - name: Send Telegram (Start)
+        if: env.DUPLICATE == 'false'
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          START_HM=$(TZ='Asia/Aden' date +"%H:%M")
+          END_HM=$(TZ='Asia/Aden' date -d "+4 hours" +"%H:%M")
+          BACKUP_HM=$(TZ='Asia/Aden' date -d "+5 hours 30 minutes" +"%H:%M")
+          
+          MESSAGE="🟤 *الوردية 4 بدأت!*
+          🕒 من: ${START_HM} إلى: ${END_HM}
+          ⏳ (احتياطي حتى: ${BACKUP_HM})
+          🔗 *Host:* \`${{ env.HOST }}\`"
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" -d chat_id="${TELEGRAM_CHAT_ID}" -d text="${MESSAGE}" -d parse_mode="Markdown"
+
+      - name: Keep Alive, Heartbeat & Overtime
+        if: env.DUPLICATE == 'false'
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          START_TIME=$(date +%s)
+          NORMAL_DURATION=$((4 * 3600))
+          MAX_DURATION=$((5 * 3600 + 1800))
+          OVERTIME_NOTIFIED=false
+          
+          while true; do
+            CURRENT_TIME=$(date +%s)
+            ELAPSED=$((CURRENT_TIME - START_TIME))
+            
+            echo "{\"active_shift\": \"shift-4\", \"heartbeat\": $CURRENT_TIME}" > state.json
+            git add state.json
+            git commit -m "Shift 4 heartbeat" || true
+            git pull --rebase && git push || true
+            
+            git pull --rebase || true
+            ACTIVE=$(grep -o '"active_shift": "[^"]*"' state.json | cut -d'"' -f4 || true)
+            
+            if [ "$ACTIVE" != "shift-4" ]; then
+              MESSAGE="🟡 *الوردية 4 سلّمت الدوام للوردية التالية وتوقفت.*
+              ⏱ مدة العمل الفعلية: $((ELAPSED / 60)) دقيقة."
+              curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" -d chat_id="${TELEGRAM_CHAT_ID}" -d text="${MESSAGE}" -d parse_mode="Markdown"
+              break
+            fi
+            
+            if [ "$ELAPSED" -ge "$NORMAL_DURATION" ] && [ "$OVERTIME_NOTIFIED" == "false" ]; then
+              OVERTIME_NOTIFIED=true
+              MESSAGE="🟠 *تنبيه: الوردية 4 دخلت في وضع التغطية الإضافية!*
+              الموظف القادم لم يصل بعد، سأستمر حتى 5.5 ساعات أو حتى يأتي البديل."
+              curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" -d chat_id="${TELEGRAM_CHAT_ID}" -d text="${MESSAGE}" -d parse_mode="Markdown"
+            fi
+            
+            if [ "$ELAPSED" -ge "$MAX_DURATION" ]; then
+              MESSAGE="🔴 *الوردية 4 انتهت من وضع التغطية (5.5 ساعات) وتتوقف إجبارياً.*
+              بانتظار وصول الموظف القادم..."
+              curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" -d chat_id="${TELEGRAM_CHAT_ID}" -d text="${MESSAGE}" -d parse_mode="Markdown"
+              break
+            fi
+            
+            sleep 60
+          done
