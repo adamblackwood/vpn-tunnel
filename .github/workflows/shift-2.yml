@@ -1,15 +1,16 @@
-name: Shift 2
+name: Shift 2 (V2.0 - Auto-Recovery)
 
 on:
   workflow_dispatch:
 
 permissions:
   contents: write
+  actions: write # صلاحية لتشغيل الورديات الأخرى برمجياً
 
 jobs:
   shift-2:
     runs-on: ubuntu-latest
-    timeout-minutes: 330
+    timeout-minutes: 345 # 5 ساعات و 45 دقيقة
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
@@ -49,8 +50,6 @@ jobs:
             HEARTBEAT=$(grep -o '"heartbeat": [0-9]*' state.json | grep -o '[0-9]*' || true)
             if [ -z "$ACTIVE" ]; then ACTIVE="none"; fi
             if [ -z "$HEARTBEAT" ]; then HEARTBEAT=0; fi
-          else
-            echo "state.json not found. Will create a new one."
           fi
           
           if [ "$ACTIVE" == "shift-2" ] && [ $((CURRENT_TIME - HEARTBEAT)) -lt 120 ]; then
@@ -60,7 +59,8 @@ jobs:
             curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" -d chat_id="${TELEGRAM_CHAT_ID}" -d text="${MESSAGE}" -d parse_mode="Markdown"
           else
             echo "DUPLICATE=false" >> $GITHUB_ENV
-            echo "{\"active_shift\": \"shift-2\", \"heartbeat\": $CURRENT_TIME}" > state.json
+            # الوردية القادمة هي shift-3
+            echo "{\"active_shift\": \"shift-2\", \"next_shift\": \"shift-3\", \"heartbeat\": $CURRENT_TIME}" > state.json
             git add state.json
             git commit -m "Shift 2 started" || true
             git push || true
@@ -76,63 +76,80 @@ jobs:
           HOST=$(echo $TUNNEL_URL | sed 's/https:\/\///')
           echo "HOST=$HOST" >> $GITHUB_ENV
 
-      - name: Send Telegram (Start)
+      - name: Send Telegram (Start) & Save Message ID
         if: env.DUPLICATE == 'false'
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           START_HM=$(TZ='Asia/Aden' date +"%H:%M")
-          END_HM=$(TZ='Asia/Aden' date -d "+4 hours" +"%H:%M")
-          BACKUP_HM=$(TZ='Asia/Aden' date -d "+5 hours 30 minutes" +"%H:%M")
+          END_HM=$(TZ='Asia/Aden' date -d "+5 hours 30 minutes" +"%H:%M")
           
           MESSAGE="🔵 *الوردية 2 بدأت!*
-          🕒 من: ${START_HM} إلى: ${END_HM}
-          ⏳ (احتياطي حتى: ${BACKUP_HM})
+          🕒 من: ${START_HM} إلى: ${END_HM} (5.5 ساعات إجبارية)
           🔗 *Host:* \`${{ env.HOST }}\`"
-          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" -d chat_id="${TELEGRAM_CHAT_ID}" -d text="${MESSAGE}" -d parse_mode="Markdown"
+          
+          # إرسال الرسالة وحفظ الـ message_id للرد عليها لاحقاً
+          RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+          -d chat_id="${TELEGRAM_CHAT_ID}" \
+          -d text="${MESSAGE}" \
+          -d parse_mode="Markdown")
+          
+          MSG_ID=$(echo "$RESPONSE" | grep -o '"message_id":[0-9]*' | cut -d':' -f2)
+          echo "MSG_ID=$MSG_ID" >> $GITHUB_ENV
+          echo "$MSG_ID" > msg_id.txt
 
-      - name: Keep Alive, Heartbeat & Overtime
+      - name: Keep Alive (5.5 Hours Enforced)
         if: env.DUPLICATE == 'false'
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           START_TIME=$(date +%s)
-          NORMAL_DURATION=$((4 * 3600))
-          MAX_DURATION=$((5 * 3600 + 1800))
-          OVERTIME_NOTIFIED=false
+          MAX_DURATION=$((5 * 3600 + 1800)) # 5.5 ساعات
           
           while true; do
             CURRENT_TIME=$(date +%s)
             ELAPSED=$((CURRENT_TIME - START_TIME))
             
-            echo "{\"active_shift\": \"shift-2\", \"heartbeat\": $CURRENT_TIME}" > state.json
-            git add state.json
-            git commit -m "Shift 2 heartbeat" || true
-            git pull --rebase && git push || true
-            
             git pull --rebase || true
             ACTIVE=$(grep -o '"active_shift": "[^"]*"' state.json | cut -d'"' -f4 || true)
             
-            if [ "$ACTIVE" != "shift-2" ]; then
-              MESSAGE="🟡 *الوردية 2 سلّمت الدوام للوردية التالية وتوقفت.*
-              ⏱ مدة العمل الفعلية: $((ELAPSED / 60)) دقيقة."
-              curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" -d chat_id="${TELEGRAM_CHAT_ID}" -d text="${MESSAGE}" -d parse_mode="Markdown"
-              break
+            # تحديث نبضات الحياة
+            if [ "$ACTIVE" == "shift-2" ]; then
+              HEARTBEAT_TIME=$(date +%s)
+              echo "{\"active_shift\": \"shift-2\", \"next_shift\": \"shift-3\", \"heartbeat\": $HEARTBEAT_TIME}" > state.json
+              git add state.json
+              git commit -m "Shift 2 heartbeat" || true
+              git push || true
             fi
             
-            if [ "$ELAPSED" -ge "$NORMAL_DURATION" ] && [ "$OVERTIME_NOTIFIED" == "false" ]; then
-              OVERTIME_NOTIFIED=true
-              MESSAGE="🟠 *تنبيه: الوردية 2 دخلت في وضع التغطية الإضافية!*
-              الموظف القادم لم يصل بعد، سأستمر حتى 5.5 ساعات أو حتى يأتي البديل."
-              curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" -d chat_id="${TELEGRAM_CHAT_ID}" -d text="${MESSAGE}" -d parse_mode="Markdown"
-            fi
-            
+            # الفحص عند الوصول لـ 5.5 ساعات
             if [ "$ELAPSED" -ge "$MAX_DURATION" ]; then
-              MESSAGE="🔴 *الوردية 2 انتهت من وضع التغطية (5.5 ساعات) وتتوقف إجبارياً.*
-              بانتظار وصول الموظف القادم..."
-              curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" -d chat_id="${TELEGRAM_CHAT_ID}" -d text="${MESSAGE}" -d parse_mode="Markdown"
+              MSG_ID=$(cat msg_id.txt)
+              
+              # التحقق مما إذا كانت الوردية القادمة (shift-3) قد بدأت
+              if [ "$ACTIVE" != "shift-3" ]; then
+                # الوردية القادمة لم تبدأ! سنقوم بتشغيلها يدوياً
+                MESSAGE="🟠 *تنبيه: الوردية 2 انتهت، والوردية 3 لم تبدأ بعد!*
+                جارٍ التدخل وتشغيل الوردية 3 يدوياً..."
+                curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" -d chat_id="${TELEGRAM_CHAT_ID}" -d text="${MESSAGE}" -d parse_mode="Markdown" -d reply_to_message_id="$MSG_ID"
+                
+                # إرسال أمر التشغيل إلى GitHub Actions لتشغيل الوردية 3
+                curl -s -X POST \
+                -H "Accept: application/vnd.github.v3+json" \
+                -H "Authorization: token $GITHUB_TOKEN" \
+                https://api.github.com/repos/${{ github.repository }}/actions/workflows/shift-3.yml/dispatches \
+                -d '{"ref":"main"}'
+                
+                sleep 60 # انتظار دقيقة لتستلم الوردية الجديدة الدوام
+              fi
+              
+              # إرسال رسالة الإغلاق النهائية (الرد على رسالة الافتتاح)
+              MESSAGE="🔴 *الوردية 2 اكتملت (5.5 ساعات) وتتوقف الآن.*
+              تم التأكد من تشغيل الوردية التالية بنجاح ✅"
+              curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" -d chat_id="${TELEGRAM_CHAT_ID}" -d text="${MESSAGE}" -d parse_mode="Markdown" -d reply_to_message_id="$MSG_ID"
               break
             fi
             
